@@ -21,23 +21,72 @@ local function chooseWallet(ui, titleSuffix)
     end
 end
 
+-- Показывает экран ожидания с ЖИВЫМ списком того, что PIM видит в инвентаре игрока
+-- прямо сейчас (обновляется само, без нажатий) - фильтр по конкретному кошельку.
+-- Возвращает "go" (нажали Внести), nil (нажали Назад / сессия закрыта).
+local function waitAndListItems(ui, pim, wallet)
+    while true do
+        ui.clear(ui.COLOR.DESKTOP_BG)
+        ui.text(4, 4, "Положите предметы в свой инвентарь.", ui.COLOR.TEXT_LIGHT)
+        ui.text(4, 5, "Список ниже обновляется сам - заберём всё это по кнопке \"Внести\":", ui.COLOR.TEXT_MUTED)
+
+        local scanOk, items = exchange.scanPlayerItems(pim)
+        local y = 7
+        if not scanOk then
+            ui.text(4, y, "Не удалось прочитать инвентарь: " .. tostring(items), ui.COLOR.BTN_BG_2)
+        else
+            local matched = {}
+            local order = {}
+            for _, it in ipairs(items) do
+                local isCredits = (it.cfg == config.SERVER_CURRENCY)
+                local inThisWallet = (wallet == "credits" and isCredits) or (wallet == "chips" and not isCredits)
+                if inThisWallet then
+                    if not matched[it.name] then order[#order + 1] = it.name end
+                    matched[it.name] = (matched[it.name] or 0) + it.count
+                end
+            end
+            if #order == 0 then
+                ui.text(4, y, "(подходящих предметов пока не найдено)", ui.COLOR.TEXT_MUTED)
+            else
+                for _, name in ipairs(order) do
+                    ui.text(4, y, name .. "  x" .. matched[name], ui.COLOR.ACCENT_GOLD)
+                    y = y + 1
+                end
+            end
+        end
+
+        local goBox = ui.button(4, ui.H - 6, 20, 3, "Внести", ui.COLOR.BTN_BG)
+        local backBox = ui.button(4, ui.H - 3, 20, 2, "Отмена", ui.COLOR.BTN_BG_2)
+
+        -- короткий таймаут ожидания касания - если игрок ничего не нажал, просто
+        -- перерисуем экран со свежим списком (эмуляция "живого" обновления)
+        local tx, ty = ui.waitTouch(2)
+        if ui.session.left then return nil end
+        if tx then
+            if ui.hit(goBox, tx, ty) then return "go" end
+            if ui.hit(backBox, tx, ty) then return nil end
+        end
+    end
+end
+
 -- ===================== ПОПОЛНЕНИЕ =====================
 function topup.deposit(ui, net, bankAddr, pim, storage, nick)
     local wallet = chooseWallet(ui, "пополнение")
     if not wallet then return end
 
-    ui.clear(ui.COLOR.DESKTOP_BG)
-    ui.text(4, 4, "Положите предметы в свой инвентарь и коснитесь экрана,", ui.COLOR.TEXT_LIGHT)
-    ui.text(4, 5, "когда всё готово (заберём всё подходящее сразу).", ui.COLOR.TEXT_LIGHT)
-    local goBox = ui.button(4, 8, 20, 3, "Внести", ui.COLOR.BTN_BG)
-    local backBox = ui.button(4, 12, 20, 2, "Отмена", ui.COLOR.BTN_BG_2)
-    local tx, ty = ui.waitTouch(60)
-    if not tx or not ui.hit(goBox, tx, ty) then
-        if tx and ui.hit(backBox, tx, ty) then return end
+    local action = waitAndListItems(ui, pim, wallet)
+    if action ~= "go" then return end
+
+    local taken, total, err = exchange.depositWallet(pim, wallet)
+    if err then
+        ui.messageBox("Ошибка", {
+            "Не удалось прочитать/забрать предметы из инвентаря:",
+            tostring(err):sub(1, 44),
+            "Ничего не списано. Попробуйте ещё раз или",
+            "запустите probe.lua и проверьте методы pim.",
+        }, 8)
         return
     end
-
-    local taken, total = exchange.depositWallet(pim, wallet)
     if total <= 0 then
         ui.messageBox("Касса", { "Не найдено подходящих предметов у вас в инвентаре." }, 4)
         return
@@ -54,7 +103,9 @@ function topup.deposit(ui, net, bankAddr, pim, storage, nick)
 
     local lines = { "Зачислено: +" .. total .. " (" .. config.WALLETS[wallet].label .. ")" }
     for name, cnt in pairs(taken) do
-        lines[#lines + 1] = name .. " x" .. cnt
+        if name ~= "_lastPushError" then
+            lines[#lines + 1] = name .. " x" .. cnt
+        end
     end
     lines[#lines + 1] = "Новый баланс: " .. tostring(result.balance)
     ui.messageBox("Пополнение выполнено", lines, 6)
