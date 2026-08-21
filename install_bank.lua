@@ -4,7 +4,7 @@
 -- (экран и PIM не обязательны).
 --
 -- ПЕРЕД ЗАГРУЗКОЙ НА GITHUB ОБЯЗАТЕЛЬНО ПОПРАВЬТЕ СТРОКУ НИЖЕ:
-local RAW_BASE = "https://raw.githubusercontent.com/USERNAME/REPO/main"
+local RAW_BASE = "https://raw.githubusercontent.com/meKryztal/oc-casino/main"
 
 local component = require("component")
 local computer = require("computer")
