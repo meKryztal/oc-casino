@@ -30,13 +30,24 @@ local function findResourceConfig(itemName)
     return nil
 end
 
--- Считывает всё, что лежит в инвентаре игрока (через pim), и возвращает
--- список { slot=, name=, count=, resourceCfg= } только для распознанных предметов.
+-- Считывает всё, что лежит в инвентаре игрока (через pim).
+-- Возвращает ok(boolean), items_или_сообщение_об_ошибке.
+-- ok=true  -> второй результат - список { slot=, name=, count=, cfg= } только для распознанных предметов.
+-- ok=false -> второй результат - текст ошибки (например, если у pim нет метода getAllStacks
+--             или он требует других аргументов - это и роняло сессию раньше).
 function exchange.scanPlayerItems(pim)
+    if not pim.getAllStacks then
+        return false, "у pim нет метода getAllStacks (проверьте probe.lua)"
+    end
+
+    local callOk, stacksOrErr = pcall(pim.getAllStacks, 0)
+    if not callOk then
+        return false, tostring(stacksOrErr)
+    end
+
     local found = {}
-    local stacks = pim.getAllStacks(0)
     local slot = 0
-    for stack in stacks do
+    for stack in stacksOrErr do
         slot = slot + 1
         if stack and stack.name and stack.size and stack.size > 0 then
             local cfg = findResourceConfig(stack.name)
@@ -45,27 +56,38 @@ function exchange.scanPlayerItems(pim)
             end
         end
     end
-    return found
+    return true, found
 end
 
 -- Забирает у игрока ВСЕ распознанные предметы одного кошелька (chips или credits) и
--- проталкивает их в хранилище. Возвращает: списанные предметы {itemName=count,...} и сумму в валюте кошелька.
+-- проталкивает их в хранилище.
+-- Возвращает: taken (списанные предметы {itemName=count,...} или nil при ошибке),
+--             total (сумма в валюте кошелька),
+--             err (текст ошибки, если что-то пошло не так, иначе nil).
 function exchange.depositWallet(pim, wallet)
-    local items = exchange.scanPlayerItems(pim)
+    local scanOk, items = exchange.scanPlayerItems(pim)
+    if not scanOk then
+        return nil, 0, items
+    end
+
     local total = 0
     local taken = {}
     for _, it in ipairs(items) do
         local isCredits = (it.cfg == config.SERVER_CURRENCY)
         local matches = (wallet == "credits" and isCredits) or (wallet == "chips" and not isCredits)
         if matches then
-            local ok = pim.pushItem(exchange.STORAGE_SIDE, it.slot, it.count)
-            if ok then
+            local callOk, pushed = pcall(pim.pushItem, exchange.STORAGE_SIDE, it.slot, it.count)
+            if callOk and pushed then
                 total = total + it.count * it.cfg.rate
                 taken[it.name] = (taken[it.name] or 0) + it.count
+            elseif not callOk then
+                -- не роняем всю операцию из-за одного стака - просто пропускаем его,
+                -- но запомним причину на случай, если вообще ничего не заберётся
+                taken._lastPushError = tostring(pushed)
             end
         end
     end
-    return taken, total
+    return taken, total, nil
 end
 
 -- ============ ВЫДАЧА ИГРОКУ (вывод / выигрыш) ============
