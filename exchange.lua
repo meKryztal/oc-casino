@@ -46,16 +46,36 @@ function exchange.scanPlayerItems(pim)
     end
 
     local found = {}
-    local slot = 0
-    for stack in stacksOrErr do
-        slot = slot + 1
+
+    -- В разных сборках OpenComputers/AE2-мостов getAllStacks(side) возвращает
+    -- ЛИБО функцию-итератор (для generic for), ЛИБО обычную таблицу-список стаков.
+    -- Раньше код всегда делал "for stack in stacksOrErr do", что падало с
+    -- "attempt to call a table value", если вернулась таблица. Обрабатываем оба случая.
+    local function addStack(slotIndex, stack)
         if stack and stack.name and stack.size and stack.size > 0 then
             local cfg = findResourceConfig(stack.name)
             if cfg then
-                found[#found + 1] = { slot = slot - 1, name = stack.name, count = stack.size, cfg = cfg }
+                found[#found + 1] = { slot = slotIndex, name = stack.name, count = stack.size, cfg = cfg }
             end
         end
     end
+
+    if type(stacksOrErr) == "function" then
+        -- вариант "итератор"
+        local slot = 0
+        for stack in stacksOrErr do
+            addStack(slot, stack)
+            slot = slot + 1
+        end
+    elseif type(stacksOrErr) == "table" then
+        -- вариант "таблица" - ключи это номера слотов (могут начинаться с 0 или с 1)
+        for slotIndex, stack in pairs(stacksOrErr) do
+            addStack(tonumber(slotIndex) or 0, stack)
+        end
+    else
+        return false, "getAllStacks вернул неожиданный тип: " .. type(stacksOrErr)
+    end
+
     return true, found
 end
 
