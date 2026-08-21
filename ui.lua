@@ -7,8 +7,15 @@
 local component = require("component")
 local computer = require("computer")
 local event = require("event")
+local unicode = require("unicode")
 
 local ui = {}
+
+-- ВАЖНО: везде, где считаем ширину строки для центрирования/выравнивания,
+-- используем unicode.len(), а НЕ #str. У кириллицы в UTF-8 по 2 байта на
+-- символ, у эмодзи 3-4 байта - #str даёт длину в байтах и все надписи
+-- смещались от истинного центра. unicode.len() даёт правильное число символов.
+local ulen = unicode.len
 
 local gpu = component.gpu
 ui.gpu = gpu
@@ -72,7 +79,7 @@ function ui.text(x, y, str, fg, bg)
 end
 
 function ui.centerText(cy, str, fg, bg)
-    local x = math.max(1, math.floor((W - #str) / 2) + 1)
+    local x = math.max(1, math.floor((W - ulen(str)) / 2) + 1)
     ui.text(x, cy, str, fg, bg)
 end
 
@@ -141,7 +148,7 @@ function ui.button(x, y, w, h, label, bgColor, fgColor, flat)
         gpu.fill(x, y + h - 1, w, 1, " ")
     end
 
-    local tx = x + math.max(0, math.floor((w - #label) / 2))
+    local tx = x + math.max(0, math.floor((w - ulen(label)) / 2))
     local ty = y + math.floor(h / 2)
     gpu.setForeground(fgColor)
     gpu.setBackground(bgColor)
@@ -183,7 +190,7 @@ function ui.taskbar(nick, chips, credits)
 
     local balanceStr = string.format("\u{1F3B0} %d    \u{1F48E} %d", chips, credits)
     gpu.setForeground(ui.COLOR.TEXT_LIGHT)
-    gpu.set(math.max(2, W - #balanceStr - 1), 1, balanceStr)
+    gpu.set(math.max(2, W - ulen(balanceStr) - 1), 1, balanceStr)
 
     gpu.setForeground(ui.COLOR.ACCENT_GOLD_DIM)
     gpu.setBackground(ui.COLOR.DESKTOP_BG)
@@ -232,11 +239,11 @@ function ui.desktop(nick, chips, credits, icons)
             gpu.setBackground(ui.COLOR.WINDOW_BG)
             gpu.set(x, y + iconH - 1, string.rep("\u{2500}", iconW))
 
-            local gx = x + math.floor(iconW / 2) - 1
+            local gx = x + math.floor((iconW - ulen(meta.glyph)) / 2)
             gpu.setForeground(ui.COLOR.TEXT_LIGHT)
             gpu.set(gx, y + 2, meta.glyph)
 
-            local lx = x + math.max(0, math.floor((iconW - #icon.label) / 2))
+            local lx = x + math.max(0, math.floor((iconW - ulen(icon.label)) / 2))
             gpu.set(lx, y + 4, icon.label)
 
             hitboxes[#hitboxes + 1] = { id = icon.id, box = { x1 = x, y1 = y, x2 = x + iconW - 1, y2 = y + iconH - 1 } }
@@ -311,14 +318,17 @@ function ui.numpad(title, maxDigits)
         gpu.setBackground(ui.COLOR.ACCENT_GOLD)
         gpu.fill(x + 1, y + 1, w - 2, 1, " ")
         gpu.setForeground(ui.COLOR.TEXT_DARK)
-        gpu.set(x + 2, y + 1, title:sub(1, w - 4))
+        gpu.set(x + 2, y + 1, title:sub(1, w - 6))
+
+        -- крестик закрытия окна ввода суммы (в правом верхнем углу заголовка)
+        local closeBox = ui.button(x + w - 3, y + 1, 2, 1, "\u{2715}", ui.COLOR.BTN_BG_2, ui.COLOR.TEXT_LIGHT, true)
 
         -- LCD-табло введённого значения
         gpu.setBackground(0x0A0A0A)
         gpu.fill(x + 2, y + 3, w - 4, 1, " ")
         local shown = (value == "" and "0" or value)
         gpu.setForeground(0x39FF6A)
-        gpu.set(x + w - 3 - #shown, y + 3, shown)
+        gpu.set(x + w - 3 - ulen(shown), y + 3, shown)
 
         local boxes = {}
         local keys = { "7", "8", "9", "4", "5", "6", "1", "2", "3", "C", "0", "\u{2190}" }
@@ -335,14 +345,16 @@ function ui.numpad(title, maxDigits)
         end
 
         local okBox = ui.button(x + 2, y + h - 2, w - 4, 1, "\u{2713} Подтвердить", ui.COLOR.BTN_BG, ui.COLOR.TEXT_LIGHT, true)
-        return boxes, okBox
+        return boxes, okBox, closeBox
     end
 
     while true do
-        local boxes, okBox = redraw()
+        local boxes, okBox, closeBox = redraw()
         local tx, ty = ui.waitTouch(60)
         if not tx then return nil end
-        if ui.hit(okBox, tx, ty) then
+        if ui.hit(closeBox, tx, ty) then
+            return nil
+        elseif ui.hit(okBox, tx, ty) then
             local n = tonumber(value)
             if n and n > 0 then return math.floor(n) end
         else
