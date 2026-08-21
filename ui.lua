@@ -162,10 +162,12 @@ function ui.waitTouch(timeout)
     while true do
         local remaining = deadline - computer.uptime()
         if remaining <= 0 then return nil end
-        local ev, _, arg2, arg3, arg4 = event.pull(math.min(remaining, 1))
+        -- touch: (name, screenAddress, x, y, button, playerName) -> a1=address, a2=x, a3=y
+        -- player_on/player_off: (name, nick) -> a1=nick
+        local ev, a1, a2, a3 = event.pull(math.min(remaining, 1))
         if ev == "touch" then
-            return arg3, arg4
-        elseif ev == "player_off" and ui.session.nick and arg2 == ui.session.nick then
+            return a2, a3
+        elseif ev == "player_off" and ui.session.nick and a1 == ui.session.nick then
             ui.session.left = true
             return nil
         end
