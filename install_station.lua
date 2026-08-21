@@ -58,6 +58,7 @@ writeFile(INSTALL_DIR .. "run.lua", [[
 -- Крутит основной скрипт в бесконечном цикле с автоперезапуском.
 -- Если main.lua упадёт (в т.ч. по Ctrl+Alt+C), просто перезапускается,
 -- игрок никогда не увидит обычную командную строку OpenOS.
+package.path = "/home/casino/?.lua;" .. package.path
 while true do
     local ok, err = pcall(dofile, "/home/casino/main.lua")
     if not ok then
