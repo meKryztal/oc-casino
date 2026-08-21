@@ -4,7 +4,7 @@
 -- (экран и PIM не обязательны).
 --
 -- ПЕРЕД ЗАГРУЗКОЙ НА GITHUB ОБЯЗАТЕЛЬНО ПОПРАВЬТЕ СТРОКУ НИЖЕ:
-local RAW_BASE = "https://raw.githubusercontent.com/meKryztal/oc-casino/main"
+local RAW_BASE = "https://raw.githubusercontent.com/USERNAME/REPO/main"
 
 local component = require("component")
 local computer = require("computer")
@@ -53,6 +53,7 @@ end
 writeFile(INSTALL_DIR .. "run_bank.lua", [[
 -- run_bank.lua (сгенерирован установщиком)
 -- Крутит банк-сервер в бесконечном цикле с автоперезапуском.
+package.path = "/home/casino/?.lua;" .. package.path
 while true do
     local ok, err = pcall(dofile, "/home/casino/bank_server.lua")
     if not ok then
