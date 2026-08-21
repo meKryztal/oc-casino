@@ -15,6 +15,14 @@ if not component.isAvailable("internet") then
 end
 local internet = require("internet")
 
+-- ВРЕМЕННО ВЫКЛЮЧЕНО: пока идёт отладка/правки файлов, автозапуск casino
+-- при загрузке компьютера не прописывается - после ошибки вас не будет
+-- сразу выкидывать обратно в игру, и можно спокойно редактировать файлы
+-- в обычном шелле OpenOS. Когда всё будет обкатано, поставьте true и
+-- переустановите (или один раз выполните команду ниже вручную на станции:
+--   echo "/home/casino/run.lua" >> /home/.shrc
+local ENABLE_AUTOSTART = false
+
 local INSTALL_DIR = "/home/casino/"
 local FILES = {
     "config.lua", "netlib.lua", "ui.lua", "exchange.lua",
@@ -69,17 +77,23 @@ end
 ]])
 print("  + " .. INSTALL_DIR .. "run.lua")
 
-local shrcLine = "/home/casino/run.lua"
-local shrcPath = "/home/.shrc"
-local existing = ""
-local rf = io.open(shrcPath, "r")
-if rf then existing = rf:read("*a") or "" rf:close() end
-if not existing:find(shrcLine, 1, true) then
-    local wf = assert(io.open(shrcPath, "a"))
-    wf:write("\n" .. shrcLine .. "\n")
-    wf:close()
+if ENABLE_AUTOSTART then
+    local shrcLine = "/home/casino/run.lua"
+    local shrcPath = "/home/.shrc"
+    local existing = ""
+    local rf = io.open(shrcPath, "r")
+    if rf then existing = rf:read("*a") or "" rf:close() end
+    if not existing:find(shrcLine, 1, true) then
+        local wf = assert(io.open(shrcPath, "a"))
+        wf:write("\n" .. shrcLine .. "\n")
+        wf:close()
+    end
+    print("  + автозапуск прописан в /home/.shrc")
+else
+    print("  ! Автозапуск временно отключён (ENABLE_AUTOSTART = false в install_station.lua)")
+    print("    Casino не стартует само при загрузке. Запускайте вручную командой:")
+    print("      /home/casino/run.lua")
 end
-print("  + автозапуск прописан в /home/.shrc")
 
 print("")
 print("ВАЖНО: перед игрой запустите один раз /home/casino/probe.lua")
