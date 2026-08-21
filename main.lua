@@ -119,6 +119,15 @@ while true do
         local ok, err = pcall(runSession, nick)
         if not ok then
             print("[main] Ошибка в сессии игрока " .. tostring(nick) .. ": " .. tostring(err))
+            -- раньше игрока просто молча кидало на "Добро пожаловать" без объяснений -
+            -- теперь хотя бы покажем, что случилось, перед сбросом на idleScreen()
+            pcall(function()
+                ui.messageBox("Сессия прервана", {
+                    "Произошла ошибка, сессия закрыта.",
+                    tostring(err):sub(1, 46),
+                    "Сообщите администратору, если повторится.",
+                }, 8)
+            end)
         end
         idleScreen()
     end
