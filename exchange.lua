@@ -52,10 +52,16 @@ function exchange.scanPlayerItems(pim)
     -- Раньше код всегда делал "for stack in stacksOrErr do", что падало с
     -- "attempt to call a table value", если вернулась таблица. Обрабатываем оба случая.
     local function addStack(slotIndex, stack)
-        if stack and stack.name and stack.size and stack.size > 0 then
-            local cfg = findResourceConfig(stack.name)
+        if not stack then return end
+        -- ВАЖНО: разные сборки PIM/адаптеров называют поля по-разному.
+        -- У вас (см. probe_result.txt / рабочий скрипт обмена руд) это id/qty,
+        -- в других сборках бывает name/size - поддерживаем оба варианта.
+        local itemId = stack.id or stack.name
+        local qty = stack.qty or stack.size
+        if itemId and qty and qty > 0 then
+            local cfg = findResourceConfig(itemId)
             if cfg then
-                found[#found + 1] = { slot = slotIndex, name = stack.name, count = stack.size, cfg = cfg }
+                found[#found + 1] = { slot = slotIndex, name = itemId, count = qty, cfg = cfg }
             end
         end
     end
@@ -119,8 +125,15 @@ local function giveItemToPlayer(pim, storage, itemName, amount)
     -- и кладёт предметы в блок, к которому подключён интерфейс (в нашем случае - к pim через adapter).
     -- Если у вашего компонента метод называется иначе - замените строку ниже.
     if storage.exportItem then
-        local ok, moved = pcall(storage.exportItem, { name = itemName }, exchange.STORAGE_SIDE, amount)
-        return ok and moved and moved > 0
+        -- На вашей сборке me_interface.getItemDetail/exportItem ждёт фильтр
+        -- {id=..., dmg=...} (см. рабочий скрипт обмена руд), а не {name=...}.
+        -- Пробуем сначала id/dmg=0, а если не сработало - запасной вариант с name
+        -- (на случай другой версии моста у кого-то ещё).
+        local ok, moved = pcall(storage.exportItem, { id = itemName, dmg = 0 }, exchange.STORAGE_SIDE, amount)
+        if ok and moved and moved > 0 then return true end
+
+        local ok2, moved2 = pcall(storage.exportItem, { name = itemName }, exchange.STORAGE_SIDE, amount)
+        return ok2 and moved2 and moved2 > 0
     end
 
     -- ЗАПАСНОЙ ВАРИАНТ: если у pim есть метод приёма предметов (симметричный pushItem), пробуем его.
