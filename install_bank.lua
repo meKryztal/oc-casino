@@ -15,11 +15,6 @@ if not component.isAvailable("internet") then
 end
 local internet = require("internet")
 
--- ВРЕМЕННО ВЫКЛЮЧЕНО, см. install_station.lua - поставьте true, когда
--- закончите отладку, или один раз выполните на банк-сервере вручную:
---   echo "/home/casino/run_bank.lua" >> /home/.shrc
-local ENABLE_AUTOSTART = false
-
 local INSTALL_DIR = "/home/casino/"
 local FILES = { "config.lua", "netlib.lua", "bank_server.lua" }
 
@@ -58,7 +53,6 @@ end
 writeFile(INSTALL_DIR .. "run_bank.lua", [[
 -- run_bank.lua (сгенерирован установщиком)
 -- Крутит банк-сервер в бесконечном цикле с автоперезапуском.
-package.path = "/home/casino/?.lua;" .. package.path
 while true do
     local ok, err = pcall(dofile, "/home/casino/bank_server.lua")
     if not ok then
@@ -69,23 +63,17 @@ end
 ]])
 print("  + " .. INSTALL_DIR .. "run_bank.lua")
 
-if ENABLE_AUTOSTART then
-    local shrcLine = "/home/casino/run_bank.lua"
-    local shrcPath = "/home/.shrc"
-    local existing = ""
-    local rf = io.open(shrcPath, "r")
-    if rf then existing = rf:read("*a") or "" rf:close() end
-    if not existing:find(shrcLine, 1, true) then
-        local wf = assert(io.open(shrcPath, "a"))
-        wf:write("\n" .. shrcLine .. "\n")
-        wf:close()
-    end
-    print("  + автозапуск прописан в /home/.shrc")
-else
-    print("  ! Автозапуск временно отключён (ENABLE_AUTOSTART = false в install_bank.lua)")
-    print("    Bank-server не стартует само при загрузке. Запускайте вручную командой:")
-    print("      /home/casino/run_bank.lua")
+local shrcLine = "/home/casino/run_bank.lua"
+local shrcPath = "/home/.shrc"
+local existing = ""
+local rf = io.open(shrcPath, "r")
+if rf then existing = rf:read("*a") or "" rf:close() end
+if not existing:find(shrcLine, 1, true) then
+    local wf = assert(io.open(shrcPath, "a"))
+    wf:write("\n" .. shrcLine .. "\n")
+    wf:close()
 end
+print("  + автозапуск прописан в /home/.shrc")
 
 print("")
 print("Готово! Перезагрузка через 5 секунд...")
