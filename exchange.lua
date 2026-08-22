@@ -1,24 +1,28 @@
--- exchange.lua
--- Физический обмен предметами между игроком (через PIM) и хранилищем станции (ME-интерфейс).
---
--- !!! ВАЖНО, ПРОЧТИТЕ ПЕРЕД ЗАПУСКОМ !!!
--- Приём предметов у игрока (pim.pushItem) я взял из вашего рабочего примера - это надёжно.
--- А вот ОБРАТНАЯ операция - выдать игроку предметы (выигрыш/вывод) - в разных версиях
--- AE2-мостов для OpenComputers называется по-разному (exportItem, pushItem с другим направлением,
--- send и т.д.). Чтобы не гадать и не сломать вам инвентарь, сначала запустите probe.lua
--- (идёт в комплекте) - он выведет точный список методов вашего me_interface/transposer.
--- Пришлите мне этот список - я подставлю верный вызов в функцию giveItemToPlayer() ниже.
--- Сейчас там стоит рабочий вариант "по умолчанию" для типового ME Interface моста,
--- но его нужно подтвердить на вашей сборке модов.
 
 local config = require("config")
 local sides = require("sides")
 
 local exchange = {}
 
--- Сторона, в которую PIM выталкивает/принимает предметы (адаптер -> интерфейс хранилища).
--- Подставьте вашу сторону (sides.up, sides.down, sides.north и т.д.) по обустройству блока.
+-- Сторона, в которую PIM выталкивает предметы при ПРИЁМЕ (adapter/pim -> хранилище).
 exchange.STORAGE_SIDE = sides.up
+
+-- Сторона, с которой ME-интерфейс кладёт предметы при ВЫДАЧЕ игроку.
+-- Подтверждено перебором (probe_give_side.lua): у вас это north.
+exchange.GIVE_SIDE = sides.north
+
+-- Включает/выключает запись диагностического лога в exchange_debug.txt.
+-- Поставьте false, когда всё заработает стабильно, чтобы не плодить лишний файл.
+exchange.DEBUG = false
+
+local function debugLog(msg)
+    if not exchange.DEBUG then return end
+    local f = io.open("exchange_debug.txt", "a")
+    if f then
+        f:write(string.format("[%s] %s\n", os.date(), msg))
+        f:close()
+    end
+end
 
 local function findResourceConfig(itemName)
     for _, r in ipairs(config.RESOURCES) do
@@ -30,11 +34,28 @@ local function findResourceConfig(itemName)
     return nil
 end
 
+
+
+-- Превращает результат depositWallet ({itemName=count,...}) в список строк
+-- с человекочитаемыми метками вместо technical id.
+-- Возвращает массив строк вида "Железный слиток x5".
+function exchange.formatTaken(taken)
+    local lines = {}
+    for itemName, count in pairs(taken) do
+        if itemName ~= "_lastPushError" then
+            local cfg = findResourceConfig(itemName)
+            local label = (cfg and cfg.label) or itemName
+            lines[#lines + 1] = string.format("%s x%d", label, count)
+        end
+    end
+    return lines
+end
+
+
 -- Считывает всё, что лежит в инвентаре игрока (через pim).
 -- Возвращает ok(boolean), items_или_сообщение_об_ошибке.
 -- ok=true  -> второй результат - список { slot=, name=, count=, cfg= } только для распознанных предметов.
--- ok=false -> второй результат - текст ошибки (например, если у pim нет метода getAllStacks
---             или он требует других аргументов - это и роняло сессию раньше).
+-- ok=false -> второй результат - текст ошибки.
 function exchange.scanPlayerItems(pim)
     if not pim.getAllStacks then
         return false, "у pim нет метода getAllStacks (проверьте probe.lua)"
@@ -47,15 +68,10 @@ function exchange.scanPlayerItems(pim)
 
     local found = {}
 
-    -- В разных сборках OpenComputers/AE2-мостов getAllStacks(side) возвращает
-    -- ЛИБО функцию-итератор (для generic for), ЛИБО обычную таблицу-список стаков.
-    -- Раньше код всегда делал "for stack in stacksOrErr do", что падало с
-    -- "attempt to call a table value", если вернулась таблица. Обрабатываем оба случая.
+    -- getAllStacks(side) может вернуть ЛИБО функцию-итератор, ЛИБО таблицу-список стаков.
     local function addStack(slotIndex, stack)
         if not stack then return end
-        -- ВАЖНО: разные сборки PIM/адаптеров называют поля по-разному.
-        -- У вас (см. probe_result.txt / рабочий скрипт обмена руд) это id/qty,
-        -- в других сборках бывает name/size - поддерживаем оба варианта.
+        -- Поддерживаем оба варианта именования полей: id/qty и name/size.
         local itemId = stack.id or stack.name
         local qty = stack.qty or stack.size
         if itemId and qty and qty > 0 then
@@ -67,14 +83,12 @@ function exchange.scanPlayerItems(pim)
     end
 
     if type(stacksOrErr) == "function" then
-        -- вариант "итератор"
         local slot = 0
         for stack in stacksOrErr do
             addStack(slot, stack)
             slot = slot + 1
         end
     elseif type(stacksOrErr) == "table" then
-        -- вариант "таблица" - ключи это номера слотов (могут начинаться с 0 или с 1)
         for slotIndex, stack in pairs(stacksOrErr) do
             addStack(tonumber(slotIndex) or 0, stack)
         end
@@ -107,8 +121,6 @@ function exchange.depositWallet(pim, wallet)
                 total = total + it.count * it.cfg.rate
                 taken[it.name] = (taken[it.name] or 0) + it.count
             elseif not callOk then
-                -- не роняем всю операцию из-за одного стака - просто пропускаем его,
-                -- но запомним причину на случай, если вообще ничего не заберётся
                 taken._lastPushError = tostring(pushed)
             end
         end
@@ -117,35 +129,55 @@ function exchange.depositWallet(pim, wallet)
 end
 
 -- ============ ВЫДАЧА ИГРОКУ (вывод / выигрыш) ============
--- storage - обёртка над компонентом хранилища (me_interface / transposer), см. station/main.lua,
--- где он передаётся как component.me_interface (или другое имя - уточним после probe.lua).
 
+-- Выдаёт игроку amount предметов itemName через ME-интерфейс.
+-- Делает несколько попыток по частям (например, если max_size стека меньше amount,
+-- или если инвентарь игрока временно не принимает часть предметов).
+-- Возвращает: ok(boolean), реально_выдано(number)
 local function giveItemToPlayer(pim, storage, itemName, amount)
-    -- ВАРИАНТ ПО УМОЛЧАНИЮ: типовой ME Interface бридж умеет exportItem(filter, side, amount)
-    -- и кладёт предметы в блок, к которому подключён интерфейс (в нашем случае - к pim через adapter).
-    -- Если у вашего компонента метод называется иначе - замените строку ниже.
+    debugLog(string.format("giveItemToPlayer: item=%s amount=%d side=%s",
+        itemName, amount, tostring(exchange.GIVE_SIDE)))
+
     if storage.exportItem then
-        -- На вашей сборке me_interface.getItemDetail/exportItem ждёт фильтр
-        -- {id=..., dmg=...} (см. рабочий скрипт обмена руд), а не {name=...}.
-        -- Пробуем сначала id/dmg=0, а если не сработало - запасной вариант с name
-        -- (на случай другой версии моста у кого-то ещё).
-        local ok, moved = pcall(storage.exportItem, { id = itemName, dmg = 0 }, exchange.STORAGE_SIDE, amount)
-        if ok and moved and moved > 0 then return true end
+        local totalGiven = 0
+        local maxAttempts = 50 -- защита от зависания, если предмет никак не удаётся выдать
+        local attempts = 0
 
-        local ok2, moved2 = pcall(storage.exportItem, { name = itemName }, exchange.STORAGE_SIDE, amount)
-        return ok2 and moved2 and moved2 > 0
+        while totalGiven < amount and attempts < maxAttempts do
+            attempts = attempts + 1
+            local remaining = amount - totalGiven
+
+            local ok, res = pcall(storage.exportItem, { id = itemName, dmg = 0 }, exchange.GIVE_SIDE, remaining)
+
+            debugLog(string.format("exportItem attempt=%d ok=%s res=%s", attempts, tostring(ok),
+                (ok and type(res) == "table") and ("size=" .. tostring(res.size)) or tostring(res)))
+
+            if ok and type(res) == "table" and res.size and res.size > 0 then
+                totalGiven = totalGiven + res.size
+            else
+                -- Не удалось переместить в этой попытке (например, инвентарь игрока заполнился) - выходим.
+                break
+            end
+        end
+
+        return totalGiven > 0, totalGiven
     end
 
-    -- ЗАПАСНОЙ ВАРИАНТ: если у pim есть метод приёма предметов (симметричный pushItem), пробуем его.
+    -- Запасной вариант, если у storage нет exportItem, но у pim есть симметричный pullItem.
     if pim.pullItem then
-        local ok, moved = pcall(pim.pullItem, exchange.STORAGE_SIDE, 1, amount)
-        return ok and moved and moved > 0
+        local ok, moved = pcall(pim.pullItem, exchange.GIVE_SIDE, 1, amount)
+        debugLog(string.format("pim.pullItem ok=%s moved=%s", tostring(ok), tostring(moved)))
+        if ok and moved and moved > 0 then
+            return true, moved
+        end
+        return false, 0
     end
 
-    return false
+    debugLog("giveItemToPlayer: нет ни exportItem, ни pullItem")
+    return false, 0
 end
 
--- Пытается выдать игроку предметы на сумму amount кошелька wallet (по конфигу ресурсов).
+-- Пытается выдать игроку предметы на сумму walletAmount кошелька wallet (по конфигу ресурсов).
 -- resourceItemName - какой именно ресурс выбрал игрок для вывода (для chips) или nil (для credits).
 -- Возвращает: ok(boolean), actuallyGivenCount(number)
 function exchange.withdrawToPlayer(pim, storage, wallet, resourceItemName, walletAmount)
@@ -162,8 +194,8 @@ function exchange.withdrawToPlayer(pim, storage, wallet, resourceItemName, walle
     local itemCount = math.floor(walletAmount / cfg.rate)
     if itemCount <= 0 then return false, 0 end
 
-    local ok = giveItemToPlayer(pim, storage, cfg.itemName, itemCount)
-    return ok, ok and itemCount or 0
+    local ok, givenCount = giveItemToPlayer(pim, storage, cfg.itemName, itemCount)
+    return ok, givenCount or 0
 end
 
 return exchange
