@@ -1,20 +1,14 @@
 -- ui.lua
--- Тач-интерфейс "рабочий стол" для монитора станции (тир 2/3 GPU+Screen).
--- Оформление: тёмно-гранатовый фон казино, золотые рамки, объёмные кнопки
--- с тенью и бликом, карточки-иконки с цветным акцентом, LCD-табло на вводе
--- суммы. Никакой текстовой командной строки игрок никогда не увидит.
+-- Тач-интерфейс для монитора 160×50 (тир 3 GPU+Screen).
+-- Оформление: тёмно-фиолетовое казино-сукно, золотые рамки, объёмные кнопки.
 
 local component = require("component")
-local computer = require("computer")
-local event = require("event")
-local unicode = require("unicode")
+local computer  = require("computer")
+local event     = require("event")
+local unicode   = require("unicode")
 
 local ui = {}
 
--- ВАЖНО: везде, где считаем ширину строки для центрирования/выравнивания,
--- используем unicode.len(), а НЕ #str. У кириллицы в UTF-8 по 2 байта на
--- символ, у эмодзи 3-4 байта - #str даёт длину в байтах и все надписи
--- смещались от истинного центра. unicode.len() даёт правильное число символов.
 local ulen = unicode.len
 
 local gpu = component.gpu
@@ -23,40 +17,40 @@ ui.gpu = gpu
 -- ===================== ПАЛИТРА =====================
 ui.COLOR = {
     -- фон
-    DESKTOP_BG   = 0x140F26, -- глубокий тёмно-фиолетовый (сукно стола)
-    DESKTOP_BG2  = 0x1E1740, -- чуть светлее, для лёгкой текстуры фона
-    TASKBAR_BG   = 0x0D0A1A,
+    DESKTOP_BG      = 0x0E0920,  -- очень тёмный фиолет (сукно)
+    DESKTOP_BG2     = 0x16123A,  -- чуть светлее для текстуры
+    TASKBAR_BG      = 0x07050F,
     -- окна/карточки
-    WINDOW_BG    = 0x201A3D,
-    WINDOW_TITLE = 0x2B2158,
+    WINDOW_BG       = 0x1A1535,
+    WINDOW_TITLE    = 0x241E50,
     -- акценты
-    ACCENT_GOLD  = 0xE8C468,
-    ACCENT_GOLD_DIM = 0x8A7440,
-    SHADOW       = 0x070512,
+    ACCENT_GOLD     = 0xF0C060,
+    ACCENT_GOLD_DIM = 0x7A6428,
+    SHADOW          = 0x050310,
     -- текст
-    TEXT_DARK    = 0x120C24,
-    TEXT_LIGHT   = 0xF3EEDD,
-    TEXT_MUTED   = 0x8D84B0,
-    -- кнопки (совместимость со старым кодом + новые)
-    ICON_BG      = 0x2A2154,
-    BTN_BG       = 0x2E9E5B, -- зелёный (оставлен для совместимости, в новых экранах не используется)
-    BTN_BG_2     = 0xC0392B, -- красный (используется только в messageBox для ошибок)
-    BTN_BG_GOLD  = 0xC9962C, -- основное "золотое" действие (крутить/подтвердить/внести)
-    BTN_BG_PURPLE= 0x6C3483, -- вторичный выбор в играх (вариант A)
-    BTN_BG_BLUE  = 0x2C6E9E, -- вторичный выбор в играх (вариант B)
-    BTN_BG_NEUTRAL = 0x342C5C, -- нейтральные/служебные кнопки (назад, цифры, пресеты ставок)
-    BTN_TEXT     = 0xFFFFFF,
+    TEXT_DARK       = 0x0E0920,
+    TEXT_LIGHT      = 0xF5EEE0,
+    TEXT_MUTED      = 0x8070A8,
+    -- кнопки
+    ICON_BG         = 0x251E50,
+    BTN_BG          = 0x1E8A4A,   -- зелёный (совместимость)
+    BTN_BG_2        = 0xA82820,   -- красный (ошибки / назад)
+    BTN_BG_GOLD     = 0xB8841A,   -- золотой (главное действие)
+    BTN_BG_PURPLE   = 0x5A2878,   -- фиолетовый (вариант A)
+    BTN_BG_BLUE     = 0x1E5C8C,   -- синий (вариант B)
+    BTN_BG_NEUTRAL  = 0x2A2450,   -- нейтральный (цифры, назад)
+    BTN_TEXT        = 0xFFFFFF,
 }
 
-local W, H = 80, 25
+local W, H = 160, 50
 
 -- ===================== ЦВЕТОВЫЕ УТИЛИТЫ =====================
 local function clamp(v) return math.min(255, math.max(0, v)) end
 
 local function shade(color, factor)
     local r = clamp(math.floor(((color >> 16) & 0xFF) * factor))
-    local g = clamp(math.floor(((color >> 8) & 0xFF) * factor))
-    local b = clamp(math.floor((color & 0xFF) * factor))
+    local g = clamp(math.floor(((color >>  8) & 0xFF) * factor))
+    local b = clamp(math.floor(( color        & 0xFF) * factor))
     return (r << 16) | (g << 8) | b
 end
 
@@ -65,7 +59,36 @@ function ui.bind(screenAddress)
     W, H = gpu.maxResolution()
     gpu.setResolution(W, H)
     ui.W, ui.H = W, H
+
+    -- ===== Двойная буферизация =====
+    -- Раньше каждая перерисовка (ui.clear + десятки gpu.fill/gpu.set) шла
+    -- напрямую в видеопамять экрана, и пользователь видел промежуточные
+    -- кадры (пустой фон, потом текст и т.д.) - отсюда мигание при каждом
+    -- обновлении. Теперь рисуем в невидимый буфер той же величины, а на
+    -- экран переносим его одним вызовом gpu.bitblt (ui.flip) - экран
+    -- меняется атомарно, промежуточные кадры не видны.
+    -- Если GPU не поддерживает доп. буферы (старая/слабая карта) - тихо
+    -- откатываемся на прямую отрисовку, как было раньше.
+    ui.buf = nil
+    if gpu.allocateBuffer then
+        local ok, buf = pcall(gpu.allocateBuffer, W, H)
+        if ok and buf then
+            ui.buf = buf
+            gpu.setActiveBuffer(buf)
+        end
+    end
+
     return W, H
+end
+
+-- Переносит содержимое невидимого буфера на экран одним вызовом.
+-- Вызывается автоматически из ui.waitTouch, поэтому в большинстве экранов
+-- явно дёргать не нужно. Явно нужен только там, где кадры меняются БЕЗ
+-- ожидания касания - например, в анимации вращения барабанов/костей.
+function ui.flip()
+    if ui.buf then
+        gpu.bitblt(0, 1, 1, W, H, ui.buf, 1, 1)
+    end
 end
 
 -- ===================== БАЗОВЫЕ ПРИМИТИВЫ =====================
@@ -86,20 +109,18 @@ function ui.centerText(cy, str, fg, bg)
     ui.text(x, cy, str, fg, bg)
 end
 
--- Тонкая рамка одинарной линией (для окон/карточек)
 function ui.drawBorder(x, y, w, h, color, bg)
     bg = bg or ui.COLOR.WINDOW_BG
     gpu.setForeground(color)
     gpu.setBackground(bg)
     gpu.set(x, y, "\u{250C}" .. string.rep("\u{2500}", math.max(0, w - 2)) .. "\u{2510}")
     for i = 1, h - 2 do
-        gpu.set(x, y + i, "\u{2502}")
+        gpu.set(x,         y + i, "\u{2502}")
         gpu.set(x + w - 1, y + i, "\u{2502}")
     end
     gpu.set(x, y + h - 1, "\u{2514}" .. string.rep("\u{2500}", math.max(0, w - 2)) .. "\u{2518}")
 end
 
--- Отбрасывает лёгкую тень вправо-вниз от прямоугольника (если помещается на экране)
 local function dropShadow(x, y, w, h)
     if x + w <= W and y + h <= H then
         gpu.setBackground(ui.COLOR.SHADOW)
@@ -108,12 +129,8 @@ local function dropShadow(x, y, w, h)
 end
 ui.shadow = dropShadow
 
--- Крупная карточка-панель (рамка + тень + заливка) - переиспользуемый "кирпичик"
--- для больших визуальных блоков (барабаны слотов, кубики, монета и т.п.),
--- чтобы не городить отдельную вёрстку в каждой мини-игре.
--- flat=true - без тени (для плотных сеток).
 function ui.panel(x, y, w, h, borderColor, bg, flat)
-    bg = bg or ui.COLOR.WINDOW_BG
+    bg          = bg          or ui.COLOR.WINDOW_BG
     borderColor = borderColor or ui.COLOR.ACCENT_GOLD
     if not flat then dropShadow(x, y, w, h) end
     gpu.setBackground(bg)
@@ -122,7 +139,7 @@ function ui.panel(x, y, w, h, borderColor, bg, flat)
     return { x1 = x, y1 = y, x2 = x + w - 1, y2 = y + h - 1 }
 end
 
--- Фон "рабочего стола": заливка + едва заметная текстура сукна + золотая окантовка сверху
+-- Фон с текстурой и верхней линией
 function ui.clear(color)
     color = color or ui.COLOR.DESKTOP_BG
     gpu.setBackground(color)
@@ -132,8 +149,8 @@ function ui.clear(color)
         gpu.setForeground(ui.COLOR.DESKTOP_BG2)
         gpu.setBackground(color)
         for y = 3, H - 2, 2 do
-            local offset = (math.floor(y / 2) % 2 == 0) and 0 or 3
-            for x = 2 + offset, W - 1, 6 do
+            local offset = (math.floor(y / 2) % 2 == 0) and 0 or 4
+            for x = 3 + offset, W - 1, 8 do
                 gpu.set(x, y, "\u{00B7}")
             end
         end
@@ -146,15 +163,12 @@ function ui.clear(color)
     gpu.setForeground(ui.COLOR.TEXT_LIGHT)
 end
 
--- Объёмная кнопка с тенью и бликом сверху. flat=true - плоский вариант без тени
--- (для плотных сеток, где тени соседних кнопок накладывались бы друг на друга).
+-- Объёмная кнопка с бликом сверху и тенью снизу
 function ui.button(x, y, w, h, label, bgColor, fgColor, flat)
     bgColor = bgColor or ui.COLOR.BTN_BG
     fgColor = fgColor or ui.COLOR.BTN_TEXT
 
-    if not flat then
-        dropShadow(x, y, w, h)
-    end
+    if not flat then dropShadow(x, y, w, h) end
 
     gpu.setBackground(bgColor)
     gpu.fill(x, y, w, h, " ")
@@ -167,11 +181,6 @@ function ui.button(x, y, w, h, label, bgColor, fgColor, flat)
     end
 
     local tx = x + math.max(0, math.floor((w - ulen(label)) / 2))
-    -- floor(h/2) для чётной высоты давал строку НИЖЕ истинного центра
-    -- (например при h=4 текст падал на 3-ю из 4 строк) - из-за этого текст
-    -- "плыл" вниз в зелёных кнопках кассы и в "Обновить"/"Отмена".
-    -- floor((h-1)/2) центрирует одинаково корректно и для чётной, и для
-    -- нечётной высоты.
     local ty = y + math.floor((h - 1) / 2)
     gpu.setForeground(fgColor)
     gpu.setBackground(bgColor)
@@ -188,12 +197,14 @@ end
 ui.session = { nick = nil, left = false }
 
 function ui.waitTouch(timeout)
+    -- Кадр к этому моменту уже полностью нарисован в буфере (если он есть) -
+    -- переносим его на экран одним блитом перед тем, как ждать касание.
+    ui.flip()
+
     local deadline = computer.uptime() + timeout
     while true do
         local remaining = deadline - computer.uptime()
         if remaining <= 0 then return nil end
-        -- touch: (name, screenAddress, x, y, button, playerName) -> a1=address, a2=x, a3=y
-        -- player_on/player_off: (name, nick) -> a1=nick
         local ev, a1, a2, a3 = event.pull(math.min(remaining, 1))
         if ev == "touch" then
             return a2, a3
@@ -204,84 +215,86 @@ function ui.waitTouch(timeout)
     end
 end
 
--- ===================== ВЕРХНЯЯ ПАНЕЛЬ =====================
+-- ===================== ВЕРХНЯЯ ПАНЕЛЬ (taskbar) =====================
+-- На 160 колонках помещаем ник слева и оба баланса справа без наездов.
 function ui.taskbar(nick, chips, credits)
     gpu.setBackground(ui.COLOR.TASKBAR_BG)
     gpu.fill(1, 1, W, 1, " ")
     gpu.setForeground(ui.COLOR.ACCENT_GOLD)
-    gpu.set(2, 1, "\u{1F464} " .. nick)
+    gpu.set(3, 1, "\u{1F464} " .. nick)
 
-    -- В Unicode нет отдельного эмодзи "слиток", поэтому для ресурсов (chips)
-    -- используем 🧱 как ближайший по виду блочный символ, а для валюты
-    -- сервера (credits) - 💚 вместо прежнего 💎 (эмеральд).
-    local balanceStr = string.format("\u{1F9F1} %d    \u{1F49A} %d", chips, credits)
+    local balanceStr = string.format("\u{1F9F1} %d фишек    \u{1F49A} %d кредитов", chips, credits)
     gpu.setForeground(ui.COLOR.TEXT_LIGHT)
-    gpu.set(math.max(2, W - ulen(balanceStr) - 1), 1, balanceStr)
+    gpu.set(W - ulen(balanceStr) - 1, 1, balanceStr)
 
     gpu.setForeground(ui.COLOR.ACCENT_GOLD_DIM)
     gpu.setBackground(ui.COLOR.DESKTOP_BG)
     gpu.set(1, 2, string.rep("\u{2500}", W))
-    gpu.setBackground(ui.COLOR.DESKTOP_BG)
 end
 
--- Метаданные для карточек-иконок: глиф + акцентный цвет каждой категории
+-- ===================== ИКОНКИ РАБОЧЕГО СТОЛА =====================
 local ICON_META = {
-    slots    = { glyph = "\u{1F3B0}", accent = 0x8E44AD },
-    dice     = { glyph = "\u{1F3B2}", accent = 0xC0392B },
-    coinflip = { glyph = "\u{1F4B0}", accent = 0xD4AF37 },
-    deposit  = { glyph = "\u{2B06}",  accent = 0x27AE60 },
-    withdraw = { glyph = "\u{2B07}",  accent = 0x2980B9 },
+    slots    = { glyph = "\u{1F3B0}", accent = 0x6A2090 },
+    dice     = { glyph = "\u{1F3B2}", accent = 0x8C2010 },
+    deposit  = { glyph = "\u{2B06}",  accent = 0x187850 },
+    withdraw = { glyph = "\u{2B07}",  accent = 0x185880 },
 }
-local DEFAULT_ICON_META = { glyph = "\u{2666}", accent = 0x555555 }
+local DEFAULT_ICON_META = { glyph = "\u{2666}", accent = 0x404040 }
 
--- Рисует одну строку карточек-иконок, центрированную по ширине экрана.
--- Вынесено отдельно, чтобы одинаково рисовать и сетку игр, и отдельный
--- ряд кассы. Возвращает добавленные хитбоксы (уже кладёт их в out).
 local function drawIconRow(out, list, startY, iconW, iconH, gapX)
     local totalW = #list * iconW + (#list - 1) * gapX
     local startX = math.max(1, math.floor((W - totalW) / 2))
     for i, icon in ipairs(list) do
         local x = startX + (i - 1) * (iconW + gapX)
         local y = startY
-        if y + iconH <= H - 1 then
+        if y + iconH - 1 <= H - 2 then
             local meta = ICON_META[icon.id] or DEFAULT_ICON_META
 
             dropShadow(x, y, iconW, iconH)
 
             gpu.setBackground(ui.COLOR.WINDOW_BG)
             gpu.fill(x, y, iconW, iconH, " ")
-            gpu.setBackground(meta.accent)
-            gpu.fill(x, y, iconW, 1, " ")
 
-            gpu.setForeground(shade(meta.accent, 0.85))
+            -- цветная шапка карточки
+            gpu.setBackground(meta.accent)
+            gpu.fill(x, y, iconW, 2, " ")
+
+            -- нижняя линия-подчёркивание карточки
+            gpu.setForeground(shade(meta.accent, 0.75))
             gpu.setBackground(ui.COLOR.WINDOW_BG)
             gpu.set(x, y + iconH - 1, string.rep("\u{2500}", iconW))
 
-            local gx = x + math.floor((iconW - ulen(meta.glyph)) / 2)
+            -- глиф в центре карточки
+            local gx = x + math.max(0, math.floor((iconW - ulen(meta.glyph)) / 2))
             gpu.setForeground(ui.COLOR.TEXT_LIGHT)
-            gpu.set(gx, y + 2, meta.glyph)
+            gpu.setBackground(ui.COLOR.WINDOW_BG)
+            gpu.set(gx, y + 3, meta.glyph)
 
+            -- подпись
             local lx = x + math.max(0, math.floor((iconW - ulen(icon.label)) / 2))
-            gpu.set(lx, y + 4, icon.label)
+            gpu.set(lx, y + 5, icon.label)
 
             out[#out + 1] = { id = icon.id, box = { x1 = x, y1 = y, x2 = x + iconW - 1, y2 = y + iconH - 1 } }
         end
     end
 end
 
--- "Рабочий стол": заголовок, сетка игр сверху, и отдельным, явно
--- отличимым блоком снизу по центру - касса (внести/вывести), с подписью.
+-- ===================== РАБОЧИЙ СТОЛ =====================
+-- Раскладка для 160×50:
+--   строка 1     - taskbar
+--   строка 2     - разделитель
+--   строки 6-17  - иконки игр (iconH=10)
+--   строка 30    - подпись "КАССА"
+--   строки 31-42 - иконки кассы
+--   строка 50    - подсказка внизу
 function ui.desktop(nick, chips, credits, icons)
     ui.clear(ui.COLOR.DESKTOP_BG)
     ui.taskbar(nick, chips, credits)
-    ui.centerText(4, "\u{2666} К А З И Н О \u{2666}", ui.COLOR.ACCENT_GOLD, ui.COLOR.DESKTOP_BG)
 
     local hitboxes = {}
-    local iconW, iconH = 16, 6
-    local gapX, gapY = 3, 2
+    local iconW, iconH = 26, 10
+    local gapX = 4
 
-    -- Разделяем на игры и кассу (внести/вывести) - касса больше не мешается
-    -- в общей сетке, а идёт отдельным блоком внизу.
     local gameIcons, kassaIcons = {}, {}
     for _, icon in ipairs(icons) do
         if icon.id == "deposit" or icon.id == "withdraw" then
@@ -291,41 +304,32 @@ function ui.desktop(nick, chips, credits, icons)
         end
     end
 
-    local startX = 4
-    local perRow = math.max(1, math.floor((W - startX) / (iconW + gapX)))
-    local startY = 7
-    for i = 1, #gameIcons, perRow do
-        local rowItems = {}
-        for j = i, math.min(i + perRow - 1, #gameIcons) do
-            rowItems[#rowItems + 1] = gameIcons[j]
-        end
-        drawIconRow(hitboxes, rowItems, startY, iconW, iconH, gapX)
-        startY = startY + iconH + gapY
-    end
+    -- Игры - одна строка карточек
+    drawIconRow(hitboxes, gameIcons, 6, iconW, iconH, gapX)
 
+    -- Касса - отдельный блок со своим заголовком
     if #kassaIcons > 0 then
-        -- Заголовок "КАССА" поднят на 1 строку выше прежнего (было kassaY-1,
-        -- впритык к верхнему краю карточек) - теперь между текстом и
-        -- иконками есть пустая строка-буфер, и подпись не сидит на кнопках.
-        local kassaY = H - iconH - 3
-        ui.centerText(kassaY - 2, "\u{2666} К А С С А \u{2666}", ui.COLOR.ACCENT_GOLD_DIM, ui.COLOR.DESKTOP_BG)
-        drawIconRow(hitboxes, kassaIcons, kassaY, iconW, iconH, gapX)
+        local kassaIconY = 30
+        ui.centerText(kassaIconY - 3, "\u{2014}\u{2014}\u{2014}  К А С С А  \u{2014}\u{2014}\u{2014}", ui.COLOR.ACCENT_GOLD_DIM, ui.COLOR.DESKTOP_BG)
+        drawIconRow(hitboxes, kassaIcons, kassaIconY, iconW, iconH, gapX)
     end
 
+    -- Нижняя строка-подсказка
     gpu.setBackground(ui.COLOR.TASKBAR_BG)
     gpu.fill(1, H, W, 1, " ")
     gpu.setForeground(ui.COLOR.TEXT_MUTED)
-    gpu.set(2, H, "\u{2726} Коснитесь иконки, чтобы открыть")
+    gpu.set(3, H, "\u{2726} Коснитесь иконки, чтобы открыть")
 
     return hitboxes
 end
 
--- Модальное окно-сообщение. Цвет рамки зависит от смысла заголовка:
--- золото - нейтрально, зелёный - выигрыш/успех, красный - ошибка.
+-- ===================== МОДАЛЬНОЕ ОКНО =====================
 function ui.messageBox(title, lines, timeout)
-    local w = math.min(W - 6, 54)
+    -- Ограничиваем 70% ширины, чтобы окно не занимало весь экран
+    local w = math.min(math.floor(W * 0.55), 90)
     local h = #lines + 7
-    local x, y = math.floor((W - w) / 2), math.floor((H - h) / 2)
+    local x = math.floor((W - w) / 2)
+    local y = math.floor((H - h) / 2)
 
     local lowered = title:lower()
     local borderColor = ui.COLOR.ACCENT_GOLD
@@ -344,15 +348,15 @@ function ui.messageBox(title, lines, timeout)
     gpu.setBackground(borderColor)
     gpu.fill(x + 1, y + 1, w - 2, 1, " ")
     gpu.setForeground(ui.COLOR.TEXT_DARK)
-    gpu.set(x + 2, y + 1, icon .. " " .. title)
+    gpu.set(x + 3, y + 1, icon .. "  " .. title)
 
     for i, line in ipairs(lines) do
         gpu.setForeground(ui.COLOR.TEXT_LIGHT)
         gpu.setBackground(ui.COLOR.WINDOW_BG)
-        gpu.set(x + 2, y + 2 + i, line)
+        gpu.set(x + 3, y + 2 + i, line)
     end
 
-    local okBox = ui.button(x + math.floor(w / 2) - 6, y + h - 2, 12, 1, "\u{2713} ОК", ui.COLOR.BTN_BG, ui.COLOR.TEXT_LIGHT, true)
+    local okBox = ui.button(x + math.floor(w / 2) - 8, y + h - 2, 16, 1, "\u{2713}  ОК", ui.COLOR.BTN_BG, ui.COLOR.TEXT_LIGHT, true)
 
     local deadline = timeout and (computer.uptime() + timeout) or nil
     while true do
@@ -364,12 +368,29 @@ function ui.messageBox(title, lines, timeout)
     end
 end
 
--- Экранная цифровая клавиатура с LCD-табло. Возвращает число или nil (отмена).
+-- ===================== ЦИФРОВАЯ КЛАВИАТУРА =====================
 function ui.numpad(title, maxDigits)
-    maxDigits = maxDigits or 6
-    local w, h = 26, 17
-    local x, y = math.floor((W - w) / 2), math.floor((H - h) / 2)
+    maxDigits = maxDigits or 8
+
+    -- Точный расчёт высоты (компактная раскладка, с запасом от краёв экрана):
+    -- строки 1-2      : заголовок + крестик (h=2 - крестику нужна высота 2, чтобы
+    --                    по нему было легко попасть тачем, а не только в 1 строку)
+    -- строка 3        : отступ
+    -- строки 4-5      : LCD (h=2)
+    -- строка 6        : отступ
+    -- строки 7-17     : клавиши 4 ряда × (kh=2 + gap=1), последний ряд без гэпа снизу
+    -- строка 18       : отступ
+    -- строки 19-21    : кнопка "Подтвердить" (h=3)
+    -- строка 22       : нижняя рамка
+    -- итого h = 23 (было 26 - ужали, чтобы гарантированно помещалось и не резалось)
+    -- x-отступы: рамка + 2 = 3; 3 колонки по kw=12 + gap=1: 3*12+2=38; 44-38=6, по 3 с каждой стороны
+    local w, h = 44, 23
+    local x = math.floor((W - w) / 2)
+    local y = math.max(1, math.floor((H - h) / 2))
     local value = ""
+
+    -- closeBox нужен снаружи redraw для hit-теста, объявляем здесь
+    local closeBox, okBox, boxes
 
     local function redraw()
         dropShadow(x, y, w, h)
@@ -377,57 +398,74 @@ function ui.numpad(title, maxDigits)
         gpu.fill(x, y, w, h, " ")
         ui.drawBorder(x, y, w, h, ui.COLOR.ACCENT_GOLD)
 
+        -- Заголовок (строки y+1..y+2, высота 2)
         gpu.setBackground(ui.COLOR.ACCENT_GOLD)
-        gpu.fill(x + 1, y + 1, w - 2, 1, " ")
+        gpu.fill(x + 1, y + 1, w - 2, 2, " ")
         gpu.setForeground(ui.COLOR.TEXT_DARK)
-        gpu.set(x + 2, y + 1, title:sub(1, w - 6))
+        gpu.set(x + 3, y + 1, title:sub(1, w - 10))
 
-        -- крестик закрытия окна ввода суммы (в правом верхнем углу заголовка)
-        local closeBox = ui.button(x + w - 3, y + 1, 2, 1, "\u{2715}", ui.COLOR.BTN_BG_2, ui.COLOR.TEXT_LIGHT, true)
+        -- Крестик: высота 2 (как в заголовке) - реально легче попасть тачем
+        closeBox = ui.button(x + w - 6, y + 1, 5, 2, "\u{2715}", ui.COLOR.BTN_BG_2, ui.COLOR.TEXT_LIGHT, true)
 
-        -- LCD-табло введённого значения
-        gpu.setBackground(0x0A0A0A)
-        gpu.fill(x + 2, y + 3, w - 4, 1, " ")
+        -- LCD-табло (строки y+4 .. y+5)
+        gpu.setBackground(0x080808)
+        gpu.fill(x + 2, y + 4, w - 4, 2, " ")
         local shown = (value == "" and "0" or value)
+        local lcdInnerW = w - 4
+        local numX = x + 2 + math.max(0, math.floor((lcdInnerW - ulen(shown)) / 2))
         gpu.setForeground(0x39FF6A)
-        gpu.set(x + w - 3 - ulen(shown), y + 3, shown)
+        gpu.setBackground(0x080808)
+        gpu.set(numX, y + 5, shown)
 
-        local boxes = {}
-        local keys = { "7", "8", "9", "4", "5", "6", "1", "2", "3", "C", "0", "\u{2190}" }
-        local kw, kh = 6, 1
-        local kx0, ky0 = x + 2, y + 5
+        -- Клавиши: 3 колонки × 4 ряда, kw=12, kh=2, colGap=1, rowGap=1
+        -- kx0 = x+3; ряды начинаются с y+7
+        -- ряд 0: y+7..y+8, ряд 1: y+10..y+11, ряд 2: y+13..y+14, ряд 3: y+16..y+17
+        boxes = {}
+        local keys = { "7","8","9", "4","5","6", "1","2","3", "C","0","\u{2190}" }
+        local kw, kh = 12, 2
+        local kx0 = x + 3
+        local ky0 = y + 7
         for i, k in ipairs(keys) do
             local col = (i - 1) % 3
             local row = math.floor((i - 1) / 3)
             local kx = kx0 + col * (kw + 1)
             local ky = ky0 + row * (kh + 1)
-            local keyColor = (k == "C") and ui.COLOR.BTN_BG_2 or 0x342C5C
+            local keyColor = (k == "C") and ui.COLOR.BTN_BG_2 or ui.COLOR.BTN_BG_NEUTRAL
             local box = ui.button(kx, ky, kw, kh, k, keyColor, ui.COLOR.TEXT_LIGHT, true)
             boxes[#boxes + 1] = { key = (k == "\u{2190}") and "<" or k, box = box }
         end
 
-        local okBox = ui.button(x + 2, y + h - 2, w - 4, 1, "\u{2713} Подтвердить", ui.COLOR.BTN_BG, ui.COLOR.TEXT_LIGHT, true)
-        return boxes, okBox, closeBox
+        -- "Подтвердить": строки y+19..y+21 (ниже последнего ряда y+16..y+17, отступ 1)
+        okBox = ui.button(x + 2, y + 19, w - 4, 3, "\u{2713}  Подтвердить", ui.COLOR.BTN_BG_GOLD, ui.COLOR.TEXT_LIGHT, true)
     end
 
+    local needsRedraw = true
     while true do
-        local boxes, okBox, closeBox = redraw()
+        if needsRedraw then
+            redraw()
+            needsRedraw = false
+        end
         local tx, ty = ui.waitTouch(60)
         if not tx then return nil end
-        if ui.hit(closeBox, tx, ty) then
+        -- Крестик - проверяем первым, до всех остальных хитбоксов
+        if closeBox and ui.hit(closeBox, tx, ty) then
             return nil
-        elseif ui.hit(okBox, tx, ty) then
+        elseif okBox and ui.hit(okBox, tx, ty) then
             local n = tonumber(value)
             if n and n > 0 then return math.floor(n) end
         else
-            for _, b in ipairs(boxes) do
-                if ui.hit(b.box, tx, ty) then
-                    if b.key == "C" then
-                        value = ""
-                    elseif b.key == "<" then
-                        value = value:sub(1, -2)
-                    else
-                        if #value < maxDigits then value = value .. b.key end
+            if boxes then
+                for _, b in ipairs(boxes) do
+                    if ui.hit(b.box, tx, ty) then
+                        if b.key == "C" then
+                            value = ""
+                        elseif b.key == "<" then
+                            value = value:sub(1, -2)
+                        else
+                            if #value < maxDigits then value = value .. b.key end
+                        end
+                        needsRedraw = true
+                        break
                     end
                 end
             end
