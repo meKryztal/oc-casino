@@ -1,4 +1,3 @@
-
 local config = require("config")
 local sides = require("sides")
 
