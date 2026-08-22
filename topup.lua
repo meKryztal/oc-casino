@@ -1,5 +1,9 @@
 -- topup.lua
 -- Экран "Касса": пополнение и вывод (Оптимизировано: центрирование, фикс подвала, снижение TPS)
+--
+-- ОБНОВЛЕНИЕ: вместо технических id предметов (minecraft:iron_ingot) теперь везде
+-- показываются человекочитаемые метки (config.RESOURCES[i].label), через
+-- exchange.formatTaken() и cfg.label в списке инвентаря.
 
 local config = require("config")
 local exchange = require("exchange")
@@ -36,20 +40,28 @@ local function waitAndListItems(ui, pim, wallet)
     
     while true do
         ui.clear(ui.COLOR.DESKTOP_BG)
-        ui.centerText(4, "Положите предметы в свой инвентарь.", ui.COLOR.TEXT_LIGHT)
-        ui.centerText(5, "Список сформирован. Нажмите 'Внести' или 'Обновить'.", ui.COLOR.TEXT_MUTED)
+        -- Текст опущен на 1 строку ниже прежнего места (было 4/5) - раньше
+        -- он был поднят слишком сильно и оказывался выше центра экрана.
+        ui.centerText(5, "Положите предметы в свой инвентарь.", ui.COLOR.TEXT_LIGHT)
+        ui.centerText(6, "Список сформирован. Нажмите 'Внести' или 'Обновить'.", ui.COLOR.TEXT_MUTED)
 
-        local y = 7
+        local y = 8
         if not scanOk then
             ui.centerText(y, "Не удалось прочитать инвентарь: " .. tostring(items), ui.COLOR.BTN_BG_2)
         else
             local matched = {}
             local order = {}
+            local labels = {}
             for _, it in ipairs(items) do
                 local isCredits = (it.cfg == config.SERVER_CURRENCY)
                 local inThisWallet = (wallet == "credits" and isCredits) or (wallet == "chips" and not isCredits)
                 if inThisWallet then
-                    if not matched[it.name] then order[#order + 1] = it.name end
+                    if not matched[it.name] then
+                        order[#order + 1] = it.name
+                        -- Человекочитаемая метка вместо технического id (cfg.label из config.RESOURCES),
+                        -- с запасным вариантом на сам id, если label не задан в конфиге.
+                        labels[it.name] = (it.cfg and it.cfg.label) or it.name
+                    end
                     matched[it.name] = (matched[it.name] or 0) + it.count
                 end
             end
@@ -57,7 +69,7 @@ local function waitAndListItems(ui, pim, wallet)
                 ui.centerText(y, "(подходящих предметов пока не найдено)", ui.COLOR.TEXT_MUTED)
             else
                 for _, name in ipairs(order) do
-                    ui.centerText(y, name .. "  x" .. matched[name], ui.COLOR.ACCENT_GOLD)
+                    ui.centerText(y, labels[name] .. "  x" .. matched[name], ui.COLOR.ACCENT_GOLD)
                     y = y + 1
                 end
             end
@@ -70,9 +82,13 @@ local function waitAndListItems(ui, pim, wallet)
         local totalW = bw_go + gap + bw_btn + gap + bw_btn
         local startX = math.floor((ui.W - totalW) / 2)
         
+        -- Все три кнопки теперь одной высоты (3) и на одном ряду - раньше
+        -- "Обновить"/"Отмена" были высотой 2, из-за чего центрирование текста
+        -- (h/2 с чётной высотой) визуально задирало подпись вверх, к
+        -- верхнему краю кнопки, а не в её середину.
         local goBox = ui.button(startX, ui.H - 5, bw_go, 3, "Внести", ui.COLOR.BTN_BG)
-        local refreshBox = ui.button(startX + bw_go + gap, ui.H - 4, bw_btn, 2, "Обновить", ui.COLOR.BTN_BG_GOLD or 0xC9962C)
-        local backBox = ui.button(startX + bw_go + gap + bw_btn + gap, ui.H - 4, bw_btn, 2, "Отмена", ui.COLOR.BTN_BG_2)
+        local refreshBox = ui.button(startX + bw_go + gap, ui.H - 5, bw_btn, 3, "Обновить", ui.COLOR.BTN_BG_GOLD or 0xC9962C)
+        local backBox = ui.button(startX + bw_go + gap + bw_btn + gap, ui.H - 5, bw_btn, 3, "Отмена", ui.COLOR.BTN_BG_2)
 
         -- Ожидаем касания долго, без спама проверками
         local tx, ty = ui.waitTouch(120)
@@ -116,8 +132,10 @@ function topup.deposit(ui, net, bankAddr, pim, storage, nick)
     end
 
     local lines = { "Зачислено: +" .. total .. " (" .. config.WALLETS[wallet].label .. ")" }
-    for name, cnt in pairs(taken) do
-        if name ~= "_lastPushError" then lines[#lines + 1] = name .. " x" .. cnt end
+    -- Человекочитаемые метки вместо технических id (exchange.formatTaken использует
+    -- config.RESOURCES[i].label, с запасным вариантом на сам id).
+    for _, line in ipairs(exchange.formatTaken(taken)) do
+        lines[#lines + 1] = line
     end
     lines[#lines + 1] = "Новый баланс: " .. tostring(result.balance)
     ui.messageBox("Успешно", lines, 6)
