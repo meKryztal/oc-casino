@@ -77,6 +77,7 @@ end
 
 -- ===================== СТОРОНА БАНК-СЕРВЕРА =====================
 
+
 -- Запустить сервер: handlers - таблица { [action] = function(reqTable) return okBoolean, resultOrError end }
 -- Функция блокирующая, крутится вечно (используйте внутри pcall-цикла с автоперезапуском).
 function net.serve(handlers, onLoopTick)
