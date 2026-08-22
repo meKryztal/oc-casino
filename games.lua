@@ -212,17 +212,13 @@ function games.slots(ui, net, bankAddr, nick, wallet, walletLabel, balance)
 
         if ui.hit(spinBtn, tx, ty) then
             if validateBet(ui, currentBet, balance) then
-                -- Анимация вращения.
-                -- os.sleep здесь заменяет ожидание касания, поэтому
-                -- автоматический flip из ui.waitTouch не сработает -
-                -- переносим каждый кадр анимации на экран вручную.
+                -- Анимация вращения
                 for _ = 1, 20 do
                     drawReels(ui, {
                         SLOT_SYMBOLS[math.random(#SLOT_SYMBOLS)],
                         SLOT_SYMBOLS[math.random(#SLOT_SYMBOLS)],
                         SLOT_SYMBOLS[math.random(#SLOT_SYMBOLS)],
                     }, true)
-                    ui.flip()
                     os.sleep(0.07)
                 end
 
@@ -232,7 +228,6 @@ function games.slots(ui, net, bankAddr, nick, wallet, walletLabel, balance)
                     SLOT_SYMBOLS[math.random(#SLOT_SYMBOLS)],
                 }
                 drawReels(ui, reels, false)
-                ui.flip()
                 idleSymbols = reels
 
                 local counts  = {}
@@ -252,13 +247,13 @@ function games.slots(ui, net, bankAddr, nick, wallet, walletLabel, balance)
                 balance = result.balance
                 if win > 0 then
                     showRoundResult(ui, win, {
-                        reels[1] .. "  " .. reels[2] .. "  " .. reels[3],
+                        
                         "Комбинация! Выигрыш: +" .. win,
                         "Баланс: " .. balance
                     })
                 else
                     showRoundResult(ui, 0, {
-                        reels[1] .. "  " .. reels[2] .. "  " .. reels[3],
+                        
                         "Не повезло в этот раз.",
                         "Баланс: " .. balance
                     })
@@ -375,14 +370,12 @@ function games.dice(ui, net, bankAddr, nick, wallet, walletLabel, balance)
             if validateBet(ui, currentBet, balance) then
                 for _ = 1, 18 do
                     drawDicePair(ui, math.random(1, 6), math.random(1, 6), CLR.REEL_DIM, true)
-                    ui.flip()
                     os.sleep(0.07)
                 end
 
                 local d1, d2 = math.random(1, 6), math.random(1, 6)
                 local sum    = d1 + d2
                 drawDicePair(ui, d1, d2, CLR.REEL_BORDER)
-                ui.flip()
                 lastD1, lastD2 = d1, d2
 
                 local win = 0
