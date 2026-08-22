@@ -27,6 +27,7 @@ local INSTALL_DIR = "/home/casino/"
 local FILES = {
     "config.lua", "netlib.lua", "ui.lua", "exchange.lua",
     "games.lua", "topup.lua", "main.lua", "probe.lua",
+    "screensaver.lua", "sprites.lua", -- нужны main.lua (заставка) и games.lua (спрайты)
 }
 
 local function download(url)
